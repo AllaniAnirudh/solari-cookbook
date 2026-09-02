@@ -63,9 +63,12 @@ product bills to the same balance.
 
 Things that cost you an afternoon if you meet them cold:
 
-- **TypeScript: call `await solari.close()`.** The browser client keeps a
-  loopback proxy open for connection retries. Skip the close and your script
-  prints its output and then hangs forever instead of exiting.
+- **TypeScript: `browser.close()` is enough to exit (as of `@solarisdk/browser`
+  0.1.3).** The client keeps a loopback proxy open for connection retries; before
+  0.1.3 that listener held Node's event loop open, so you had to
+  `await solari.close()` or the script printed its output and then hung forever.
+  0.1.3 unrefs the listener — `browser.close()` alone now exits. Calling
+  `solari.close()` is still fine and releases the client's pool immediately.
 - **Recording is per session, not per account.** Pass `recording: true` when you
   create the session; without it the replay endpoint 404s forever. The upload is
   async after release, so poll for ~30s before giving up.
