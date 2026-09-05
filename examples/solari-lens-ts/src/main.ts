@@ -1,0 +1,45 @@
+import { startDashboard } from "./dashboard.js"
+import { LensStore } from "./lens.js"
+import { runLive } from "./live.js"
+
+const mode = process.argv[2] ?? "sample"
+const port = Number(process.env.LENS_PORT ?? 4173)
+const store = new LensStore()
+
+if (mode === "doctor") {
+  const checks = [
+    ["SOLARI_API_KEY", Boolean(process.env.SOLARI_API_KEY)],
+    ["OPENCODE_API_KEY", Boolean(process.env.OPENCODE_API_KEY)],
+    ["MODEL_NAME", Boolean(process.env.MODEL_NAME)],
+    ["OPENCODE_PROTOCOL", (process.env.OPENCODE_PROTOCOL ?? "chat-completions") === "chat-completions"]
+  ] as const
+  let failed = false
+  for (const [name, ok] of checks) {
+    console.log(`${ok ? "PASS" : "FAIL"} ${name}`)
+    if (!ok) failed = true
+  }
+  console.log("INFO desktop and preview checks run during demo:live to avoid creating billable resources during doctor")
+  if (failed) process.exitCode = 1
+} else if (mode === "sample") {
+  const runId = store.seedSample()
+  startDashboard(store, port)
+  console.log(`sample run: ${runId}`)
+  keepAlive()
+} else if (mode === "live") {
+  startDashboard(store, port)
+  try {
+    const runId = await runLive(store)
+    console.log(`live run: ${runId}`)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error)
+    process.exitCode = 1
+  }
+  keepAlive()
+} else {
+  console.error(`Unknown mode ${mode}. Use sample, doctor, or live.`)
+  process.exitCode = 1
+}
+
+function keepAlive(): void {
+  process.on("SIGINT", () => process.exit(0))
+}
