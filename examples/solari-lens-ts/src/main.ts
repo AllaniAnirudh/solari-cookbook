@@ -27,15 +27,30 @@ if (mode === "doctor") {
   console.log(`sample run: ${runId}`)
   keepAlive()
 } else if (mode === "live") {
-  startDashboard(store, port)
+  const dashboard = startDashboard(store, port)
+  const controller = new AbortController()
+  let interrupted = false
+  const interrupt = () => {
+    interrupted = true
+    console.error("Interrupt received; waiting for the current Solari operation to finish cleanup")
+    controller.abort()
+  }
+  process.once("SIGINT", interrupt)
   try {
-    const runId = await runLive(store)
+    const runId = await runLive(store, controller.signal)
     console.log(`live run: ${runId}`)
   } catch (error) {
     console.error(error instanceof Error ? error.message : error)
     process.exitCode = 1
+  } finally {
+    process.removeListener("SIGINT", interrupt)
+    if (interrupted) {
+      await new Promise<void>((resolve) => dashboard.close(() => resolve()))
+      process.exitCode = 130
+    } else {
+      keepAlive()
+    }
   }
-  keepAlive()
 } else {
   console.error(`Unknown mode ${mode}. Use sample, doctor, or live.`)
   process.exitCode = 1

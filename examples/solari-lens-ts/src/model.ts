@@ -16,14 +16,16 @@ export class OpenCodeModel {
   private readonly baseUrl = (process.env.OPENCODE_BASE_URL ?? "https://opencode.ai/zen/go/v1").replace(/\/$/, "")
   private readonly model = normalizeModel(process.env.MODEL_NAME ?? "deepseek-v4-flash-vision-exp")
   private readonly apiKey = process.env.OPENCODE_API_KEY ?? configuredGoKey()
+  private readonly timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? 60_000)
 
   assertConfigured(): void {
     if (!this.apiKey) throw new Error("OPENCODE_API_KEY is required, or configure OpenCode Go with `opencode providers login`")
     if ((process.env.OPENCODE_PROTOCOL ?? "chat-completions") !== "chat-completions") throw new Error("This prototype currently supports OPENCODE_PROTOCOL=chat-completions only")
   }
 
-  async complete(messages: Message[], tools: ToolDefinition[], runId: string): Promise<ModelResponse["message"]> {
+  async complete(messages: Message[], tools: ToolDefinition[], runId: string, signal?: AbortSignal): Promise<ModelResponse["message"]> {
     this.assertConfigured()
+    const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs)
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -32,7 +34,8 @@ export class OpenCodeModel {
         "user-agent": "solari-lens-demo/0.1",
         "x-opencode-session": runId
       },
-      body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", temperature: 0 })
+      body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", temperature: 0 }),
+      signal: requestSignal
     })
     if (!response.ok) {
       const body = await response.text()

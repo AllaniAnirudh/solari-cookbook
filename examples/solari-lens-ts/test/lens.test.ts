@@ -20,6 +20,15 @@ test("events have monotonic sequences and preserve operation errors", async () =
   assert.equal((data.events as any[]).map((event) => event.sequence).join(","), "1,2,3")
 })
 
+test("tool results summarize opaque SDK handles without persisting the handle", async () => {
+  const lens = store()
+  const run = lens.startRun("opaque result")
+  const handle = Object.create({ close() {} })
+  await run.executeTool({ environment: "browser", tool: "launch", execute: () => handle })
+  const event = lens.run(run.runId)?.events.find((item: any) => item.type === "browser.tool.complete") as any
+  assert.deepEqual(event.attributes.result, { kind: "Object" })
+})
+
 test("sample run is credential-free and has all three environment stages", () => {
   const lens = store()
   const runId = lens.seedSample()

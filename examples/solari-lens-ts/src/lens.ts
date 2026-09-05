@@ -253,5 +253,12 @@ function parseRow(row: any): any {
 function summarize(value: unknown): unknown {
   if (value instanceof Uint8Array) return { kind: "bytes", length: value.byteLength }
   if (typeof value === "string" && value.length > 1000) return `${value.slice(0, 1000)}…`
-  return value
+  if (value === null || typeof value !== "object") return value
+  if (value instanceof Error) return { kind: value.name, message: value.message }
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => summarize(item))
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    return { kind: (value as { constructor?: { name?: string } }).constructor?.name ?? "object" }
+  }
+  return Object.fromEntries(Object.entries(value).slice(0, 30).map(([key, item]) => [key, summarize(item)]))
 }
