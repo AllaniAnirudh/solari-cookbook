@@ -215,6 +215,10 @@ export class LensStore {
     return row ? parseRow(row) : undefined
   }
 
+  eventsSince(runId: string, sequence: number): unknown[] {
+    return this.db.prepare("SELECT id, sequence, run_id as runId, operation_id as operationId, parent_operation_id as parentOperationId, source_timestamp as sourceTimestamp, received_timestamp as receivedTimestamp, environment, provenance, type, status, summary, attributes, artifact_ids as artifactIds FROM events WHERE run_id = ? AND sequence > ? ORDER BY sequence").all(runId, sequence).map(parseRow)
+  }
+
   seedSample(): string {
     const existing = this.db.prepare("SELECT id FROM runs WHERE id = 'sample-run'").get()
     if (existing) return "sample-run"

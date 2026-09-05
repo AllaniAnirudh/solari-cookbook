@@ -11,11 +11,13 @@ let selected;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function get(path){const r=await fetch(path);return r.json()}
 function outcome(run){const o=run.outcome||{};return [['Investigation',o.executionStatus||run.status],['Checkout',o.taskOutcome||'pending'],['Diagnosis',o.diagnosis||'pending'],['Cleanup',o.cleanupStatus||'pending']].map(([k,v])=>'<span class="outcome"><b>'+esc(k)+'</b>'+esc(v)+'</span>').join('')}
-function renderRuns(runs){document.querySelector('#runs').innerHTML=runs.map(r=>'<button class="run '+(r.id===selected?'active':'')+'" onclick="selectRun(\\''+r.id+'\\')"><strong>'+esc(r.name)+'</strong><small>'+esc(r.status)+' · '+esc(r.startedAt)+'</small></button>').join('')}
+function renderRuns(runs){document.querySelector('#runs').innerHTML=runs.map(r=>'<button class="run '+(r.id===selected?'active':'')+'" data-run-id="'+esc(r.id)+'"><strong>'+esc(r.name)+'</strong><small>'+esc(r.status)+' · '+esc(r.startedAt)+'</small></button>').join('');document.querySelectorAll('[data-run-id]').forEach(button=>button.addEventListener('click',()=>selectRun(button.dataset.runId)))}
 function render(data){const events=data.events||[], artifacts=data.artifacts||[];document.querySelector('#content').innerHTML='<div class="outcomes">'+outcome(data.run)+'</div><div class="story"><section class="timeline"><h2 style="font-size:16px;margin:0 0 14px">Run story</h2>'+events.map(e=>'<article class="event '+esc(e.environment)+'"><strong>'+esc(e.summary)+'</strong><p>'+esc(e.type)+'</p><div class="meta"><span class="tag">'+esc(e.provenance)+'</span><span class="tag">'+esc(e.status)+'</span>#'+esc(e.sequence)+'</div></article>').join('')+'</section><section class="evidence"><h2 style="font-size:16px;margin:0 0 14px">Evidence</h2>'+(artifacts.length?artifacts.map(a=>'<div class="artifact"><b>'+esc(a.type)+' · '+esc(a.state)+'</b><p>'+esc(a.summary)+'</p><small class="muted">'+esc(a.environment)+' · '+esc(a.metadata?.reviewedForSharing?'reviewed for sharing':'not reviewed for sharing')+'</small></div>').join(''):'<p class="muted">No artifacts attached.</p>')+'</section></div>'}
 async function selectRun(id){selected=id;renderRuns(await get('/api/runs'));render(await get('/api/runs/'+id))}
-async function refresh(){const runs=await get('/api/runs');if(!selected&&runs[0])selected=runs[0].id;renderRuns(runs);if(selected){const data=await get('/api/runs/'+selected);render(data)}}
-refresh();setInterval(refresh,1200);
+let stream;
+async function refresh(){const runs=await get('/api/runs');if(!selected&&runs[0])selected=runs[0].id;renderRuns(runs);if(selected){const data=await get('/api/runs/'+selected);render(data);openStream()}}
+function openStream(){if(stream)stream.close();stream=new EventSource('/events/'+selected);stream.onmessage=()=>refresh()}
+refresh();setInterval(()=>{if(!stream||stream.readyState===2)refresh()},5000);
 </script></body></html>`
 
 export function startDashboard(store: LensStore, port: number): Server {
@@ -37,6 +39,22 @@ export function startDashboard(store: LensStore, port: number): Server {
       if (!data) { res.writeHead(404); res.end("Not found"); return }
       res.writeHead(200, { "content-type": "application/json" })
       res.end(JSON.stringify(data))
+      return
+    }
+    if (url.pathname.startsWith("/events/")) {
+      const runId = decodeURIComponent(url.pathname.slice("/events/".length))
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+      let sequence = Number(url.searchParams.get("after") ?? 0)
+      const send = () => {
+        const events = store.eventsSince(runId, sequence) as Array<{ sequence: number }>
+        for (const event of events) {
+          sequence = event.sequence
+          res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`)
+        }
+      }
+      send()
+      const timer = setInterval(send, 500)
+      req.on("close", () => clearInterval(timer))
       return
     }
     if (url.pathname.startsWith("/api/artifacts/")) {
