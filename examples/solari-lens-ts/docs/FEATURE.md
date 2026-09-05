@@ -1,81 +1,108 @@
-# Solari Lens Feature
+# Solari Lens
 
-Solari Lens is a proposed native Solari capability for making agent runs understandable. It is a feature in the Solari workflow, not a separate product or hosted SaaS application.
+## One-Sentence Description
 
-## User Outcome
+Lens is a proposed Solari feature that turns an agent run into a readable, evidence-linked record.
 
-After a run, a user should be able to answer:
+It is intended to help answer a simple question: why did the agent succeed, fail, or stop?
 
-- What is the agent doing now?
-- What happened when the task failed?
-- Which evidence supports the conclusion?
-- What remains uncertain?
-- Were Solari resources released?
+## Two Audiences
 
-The dashboard presents this as a run history and evidence-linked timeline. It keeps the task result, investigation result, diagnosis, environment stages, and cleanup result separate.
+### Developers And End Users
 
-## Demonstration Boundary
+They use Lens to understand one run:
 
-The checkout workflow is only the proof scenario. The Lens event model and adapters remain task-agnostic:
+- What the agent attempted.
+- Where the workflow failed.
+- What the user could see at that point.
+- Which logs and screenshots support the explanation.
+- Whether the run cleaned up its Solari resources.
 
-1. Sandbox hosts a deterministic fixture and records sanitized request evidence.
-2. Browser performs a model-driven investigation and captures screenshots.
-3. Desktop independently observes the same run-specific state and records visual evidence.
-4. Sandbox analyzes the request log and evidence index.
-5. Lens stores the timeline, artifacts, assessment provenance, diagnosis, and cleanup state.
+### Solari And Customer Engineering Teams
 
-The public Lens facade is `Lens`, `LensStore` is the local prototype persistence layer, and `executeTool()` is the instrumentation boundary. The Solari SDK objects are not proxied wholesale.
+Across many runs, the same data can show:
 
-## Evidence Rules
+- Repeated application or tool failures.
+- Agents taking unnecessary actions.
+- Slow Browser, Sandbox, or Desktop stages.
+- Cleanup failures and wasted resource time.
+- Regressions in agent or platform reliability.
 
-- Raw chain of thought is not collected or displayed.
-- Agent-reported summaries are labeled as agent-reported, not presented as hidden reasoning or verified facts.
-- A terminal assessment must use the `finish` schema and reference stage-owned screenshots.
-- When the agent must stop, the model request forces the single `finish` function so it cannot continue clicking or typing.
-- Screenshots and text artifacts are retained locally until explicitly reviewed for sharing.
-- Preview credentials, headers, tokens, and sensitive text are redacted before persistence or export.
-- A supported diagnosis may include caveats. Caveats do not become blockers unless they prevent the evidence join.
+Those cross-run views are the business direction, not part of this local prototype. The prototype proves that a single run can be captured and explained without hiding uncertainty.
 
-## Run Outcomes
+## What The Example Does
 
-The dashboard distinguishes:
+The checkout app is a controlled test fixture, not the product. It runs in a Solari Sandbox and has a deliberate schema defect: the payment request submits `zipCode`, while the server requires `postalCode`.
 
-- Execution: `completed`, `failed`, or `incomplete`
-- Task: `succeeded`, `blocked`, or `failed`
-- Diagnosis: `confirmed`, `supported`, or `inconclusive`
-- Stage: `succeeded`, `failed`, `unsupported`, `incomplete`, or `cleanup-pending`
-- Cleanup: `succeeded`, `partial`, or `failed`
+The run proceeds through:
 
-Terminal runs are immutable. Interrupted runs are recovered only after stale event activity, preventing a second process from overwriting an active run. Remote Desktop and Sandbox cleanup is not considered successful until Solari reports a terminal gone state or a definitive not-found response.
+1. Sandbox fixture and sanitized request log.
+2. Browser investigation with screenshots.
+3. Independent Desktop observation of the payment state.
+4. Sandbox analysis of the request log and evidence index.
+5. Lens timeline, assessment, diagnosis, and cleanup result.
 
-## Business Packaging
+This sequence shows how Lens can be reused for another agent task without changing the core event and evidence model.
 
-Lens should be packaged as an observability and debugging capability within Solari plans, not as a second billing system:
+## What Gets Recorded
 
-- Day one: local timeline, run history, redacted metadata, screenshots, evidence links, Markdown/JSONL export, and cleanup status.
-- Team or paid tier candidate: shared retention, collaboration, searchable run history, and hosted export controls.
-- Higher-tier candidate: longer retention, organization-wide diagnostics, richer replay integrations, and policy controls.
+Lens records tool starts, completions, errors, observations, artifacts, assessments, stage outcomes, diagnosis, and cleanup. Every artifact is associated with its run, environment, and producing operation.
 
-These tiers are product hypotheses, not current Solari entitlements. Solari execution credits and OpenCode model usage remain separate concerns. Lens does not bundle or resell model inference.
+Provenance is explicit:
 
-## Exclusions
+- `observed`: returned by a tool or Solari operation.
+- `agent-reported`: a concise model assessment.
+- `derived`: produced by the deterministic analyzer.
+- `operator`: added by the runtime or a human.
 
-The first feature version excludes raw chain of thought, authenticated user profiles, stealth or CAPTCHA bypass, undocumented observer frames, broad SDK wrappers, hosted Lens billing, and multi-model orchestration. These exclusions reduce security and scope risk while preserving the user-visible value. Their future placeholders belong in the plan, not in the day-one runtime.
+The dashboard shows the timeline first. Technical details can be expanded when someone needs to inspect an operation or artifact.
 
-## Current Verification
+## What It Does Not Record
 
-The corrected implementation has passed the local type check and 27 tests. The live doctor passed Sandbox preview, Browser rendering, Desktop readiness, model vision, visible input change, and verified cleanup. One fresh live run completed with:
+Lens does not collect or display raw chain of thought. It records only short, structured summaries that the model chooses to report. These summaries are not treated as proof of hidden reasoning.
 
-```text
-executionStatus: completed
-taskOutcome: blocked
-diagnosis: supported
-browser: succeeded
-desktop: succeeded
-sandbox: succeeded
-cleanupStatus: succeeded
-```
+The terminal assessment request forces the `finish` function. This prevents a model from continuing to click or type after the useful evidence has been collected.
 
-The genuine run identified the fixture defect: payment submitted `zipCode` while the server requires `postalCode`. The Desktop screenshot independently showed no visible result from the attempted payment interaction and is recorded as a caveat because it generated no matching server request. The post-run Solari inventory contained zero remaining Sandbox or Desktop resources.
+## Safety Rules
 
-The three-consecutive-run release gate and reviewed public sample remain open. See [`PLAN.md`](../PLAN.md), [`DECISION_TREE.md`](../DECISION_TREE.md), and [`IMPLEMENTATION_AUDIT.md`](../IMPLEMENTATION_AUDIT.md) for the complete delivery and submission criteria.
+- Redact secrets, headers, capability URLs, preview tokens, and sensitive text before persistence or export.
+- Keep screenshots and text artifacts local until a person marks them for sharing.
+- Exclude unreviewed artifact content from exports while preserving its evidence reference.
+- Treat a missing artifact or request as a limitation, not as a reason to invent a conclusion.
+- Confirm remote Desktop and Sandbox cleanup before reporting it as successful.
+
+## Day-One Feature
+
+The first useful version should contain:
+
+- Live timeline and run history.
+- Failure, diagnosis, stage, and cleanup outcomes.
+- Evidence links for screenshots, logs, and reports.
+- Concise assessments with provenance labels.
+- Redacted Markdown and JSONL export.
+- Basic duration, action, artifact, and resource metrics.
+
+Lens should be included in Solari's existing platform and plan structure rather than become a separate billing product. A future packaging model could add team sharing, hosted retention, cross-run search, efficiency analytics, alerts, and enterprise controls. Those are product hypotheses until validated with actual Solari users.
+
+Solari resource credits and OpenCode model usage remain separate. This example does not claim that model calls are included in a Solari plan.
+
+## Intentionally Out Of Scope
+
+- Raw chain of thought.
+- Authenticated browser profiles.
+- Stealth, proxies, and CAPTCHA handling.
+- Undocumented observer frames as the source of truth.
+- Transparent wrappers for every Solari SDK object.
+- PTY, snapshots, volumes, Git, and arbitrary desktop applications.
+- Hosted Lens billing or a second organization system.
+- Multi-model comparison.
+
+These exclusions keep the first feature focused on explaining a run and avoid adding security, policy, and account-management problems before the core workflow is useful.
+
+## Current Proof
+
+The local type check and 27 tests pass. The live doctor has passed preview access, Browser rendering, Desktop readiness, model vision, visible Desktop input, and cleanup.
+
+One live run completed with a blocked checkout and supported diagnosis. It found the `zipCode` versus `postalCode` mismatch, recorded independent Desktop visual evidence, and left zero Sandbox or Desktop sessions behind.
+
+The remaining release work is three consecutive fresh live runs and a human-reviewed, credential-free sample.

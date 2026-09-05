@@ -1,73 +1,107 @@
 # Solari Lens
 
-Solari Lens is a proposed Solari feature that turns one agent run across Browser, Sandbox, and Desktop into an evidence-linked timeline. The example is intentionally local and self-contained: the checkout fixture is synthetic, the diagnosis is produced from recorded evidence, and the live model path is optional.
+Solari Lens is a proposed Solari feature that helps developers understand an agent run after something goes wrong.
 
-## Architecture and orchestration
+The demo follows one checkout attempt through three Solari environments:
 
-- [Implementation plan](PLAN.md): feature scope, event contract, business packaging, and verification requirements.
-- [Decision tree](DECISION_TREE.md): prerequisites, environment handoffs, failure branches, and release gates.
-- [Implementation audit](IMPLEMENTATION_AUDIT.md): known gaps and the distinction between intended behavior and verified implementation.
-- [Feature documentation](docs/FEATURE.md): user outcome, evidence rules, business packaging, exclusions, and current verification.
+1. A Sandbox runs the checkout fixture and records sanitized request logs.
+2. A Browser agent attempts the checkout and captures its actions and screenshots.
+3. A Desktop agent independently checks the visible result.
+4. The Sandbox analyzes the evidence.
+5. Lens shows the run as a timeline with linked evidence and separate outcomes.
 
-The intended sequence is Sandbox fixture -> Browser investigation -> independent Desktop confirmation -> Sandbox evidence analysis -> Lens outcome and cleanup. The plan describes the target implementation; the release gates are not yet met.
+Checkout is the demonstration scenario. Lens itself is the reusable part: the event model, evidence handling, adapters, and dashboard.
 
-## Run the credential-free sample
+Lens has two audiences. End users and developers use it to understand a single run and fix the immediate problem. Solari teams and customer engineering teams can use the same data across many runs to find recurring failures, unnecessary agent actions, slow environments, and opportunities to improve reliability and efficiency. This repository demonstrates the first use case; hosted aggregation and organization-level analytics are future product work.
+
+## Start Here
+
+The sample runs without credentials:
 
 ```bash
 npm install
 npm run demo:sample
 ```
 
-Open the printed dashboard URL. The current sample is synthetic demonstration data, not a genuine captured run. Replacing it with a reviewed real capture is a release requirement.
+Open the dashboard URL printed in the terminal. It shows the Lens workflow and its evidence model using illustrative data.
 
-## Run the live workflow
-
-The live workflow requires Solari capacity for one browser, one sandbox, and one desktop concurrently, plus an OpenCode Go model with tool calling and screenshot input. Solari credits cover the execution environments; OpenCode Go model usage is a separate provider subscription and has its own limits.
+For a real run, configure `SOLARI_API_KEY`. OpenCode Go can use the existing local CLI login or `OPENCODE_API_KEY`:
 
 ```bash
-cp .env.example .env
-# fill in SOLARI_API_KEY; OpenCode Go may use the existing local CLI auth
 npm run doctor
 npm run demo:live
 ```
 
-The implementation uses the OpenCode Go chat-completions protocol by default and selects `deepseek-v4-flash-vision-exp` unless `MODEL_NAME` is set. It accepts `OPENCODE_API_KEY` or the existing OpenCode CLI credential at `~/.local/share/opencode/auth.json`. Terminal assessments use an explicit forced `finish` tool choice so an agent cannot continue acting after the evidence budget is over. Confirm the chosen model and protocol through the [OpenCode Go documentation](https://opencode.ai/docs/go/) before running it.
+The live run needs one Browser, one Sandbox, and one Desktop session at the same time. `npm run doctor` creates temporary resources, checks the complete path, and verifies cleanup.
 
-## Intended workflow
-
-1. The Sandbox hosts a deterministic checkout fixture and exposes a preview URL.
-2. A real Browser agent attempts checkout and records observations and evidence.
-3. A real Desktop agent independently confirms the visible blocked state with bounded screenshot-driven actions.
-4. The Sandbox analyzes sanitized evidence from both environments and writes a diagnosis.
-5. Lens presents the investigation, checkout outcome, stage status, evidence provenance, and cleanup state.
-
-The desktop stage is limited to 10 actions or 90 seconds. The model receives the task and fixture state, not the seeded diagnosis. Scripted coordinates are not used as a fallback for model control.
-
-## Integration boundary
-
-Lens instruments an agent's tool dispatcher rather than proxying every Solari SDK object:
-
-```ts
-await run.executeTool({
-  environment: "browser",
-  tool: "click",
-  input: { role: "button", name: "Pay" },
-  execute: () => page.getByRole("button", { name: "Pay" }).click()
-});
-```
-
-The local event store is SQLite. Events use monotonic sequences for the live SSE timeline. Optional host-configured OpenTelemetry is planned. Text redaction and reviewed export handling are under implementation; screenshots require separate review because pixels can contain credentials.
-
-## Verification
+To run once and exit after cleanup:
 
 ```bash
-npm test
+LENS_RUN_ONCE=1 npm run demo:live
 ```
 
-Before making the full cross-environment claim, run three fresh live runs with confirmed cleanup and review the sanitized sample. Browser replay playback is an enhancement; screenshots and action events are the baseline evidence.
+## What The Demo Shows
 
-## Scope
+The fixture contains a deliberate payment defect. The server expects `postalCode`, while the submitted payment request contains `zipCode`. The customer-facing page only says that payment could not be completed.
 
-This is a proposed feature inside Solari, not a separate hosted SaaS product. Runtime billing, Lens accounts, hosted retention, desktop streaming, raw chain-of-thought, and transparent SDK-wide wrappers are outside this submission. Future packaging should align with Solari's existing organization and replay-retention model rather than inventing a second billing system. Lens does not bundle or resell model inference; the demo's OpenCode Go usage remains governed by OpenCode's subscription and limits.
+Lens makes the distinction visible:
 
-Solari references: [TypeScript SDK](https://docs.getsolari.com/sdk/typescript), [VMs](https://docs.getsolari.com/desktops), [Sandboxes](https://docs.getsolari.com/sandboxes), and [recording](https://docs.getsolari.com/recording).
+- The checkout is blocked.
+- The investigation completed.
+- The diagnosis is supported by the sanitized request log and screenshots.
+- The Desktop result is labeled as independent visual confirmation.
+- Cleanup is reported separately and is confirmed against Solari's remote state.
+
+Lens does not collect or display raw chain of thought. The model can submit a short, evidence-linked assessment, labeled `agent-reported`.
+
+## Implementation
+
+`run.executeTool()` is the instrumentation boundary. It records the operation, environment, status, redacted inputs and outputs, and linked artifacts while returning the original result to the agent.
+
+The demo has narrow adapters for the exact Browser, Sandbox, and Desktop operations it uses. SQLite stores the local event and artifact index. Server-Sent Events stream new events to the dashboard and resume with `Last-Event-ID`.
+
+The public `Lens` facade and the adapters show the intended feature boundary. The live checkout orchestration is deliberately kept in the example rather than presented as a general SDK wrapper.
+
+## Evidence And Safety
+
+- Every artifact belongs to a run and records its producing operation.
+- Screenshots are local-only until explicitly marked for sharing.
+- Signed preview URLs, tokens, headers, and sensitive text are redacted before persistence and export.
+- The terminal assessment request forces the `finish` function, so the model cannot continue clicking after its action budget is over.
+- A supported diagnosis can include caveats. Caveats are shown separately from evidence blockers.
+- Cleanup is successful only after Solari reports the session as gone or definitively not found.
+
+## Current Status
+
+Verified locally:
+
+- TypeScript compilation.
+- 27 unit and integration tests.
+- Browser, Sandbox, and Desktop adapters.
+- Dashboard, SSE reconnect, redaction, evidence ownership, and reviewed export behavior.
+
+Verified against Solari and OpenCode Go:
+
+- Sandbox preview content.
+- Browser rendering.
+- Desktop readiness and browser discovery.
+- Model screenshot interpretation and visible mouse input.
+- One complete live run with a supported blocked-checkout diagnosis.
+- Zero remaining Sandbox or Desktop resources after the run.
+
+The full public claim still requires three consecutive fresh live runs and a human-reviewed credential-free sample. The repository does not claim that Lens is an officially shipped Solari feature.
+
+## Documents
+
+- [Feature overview](docs/FEATURE.md)
+- [Implementation plan](PLAN.md)
+- [Decision tree](DECISION_TREE.md)
+- [Implementation audit](IMPLEMENTATION_AUDIT.md)
+
+## References
+
+- [Solari TypeScript SDK](https://docs.getsolari.com/sdk/typescript)
+- [Solari Sandboxes](https://docs.getsolari.com/sandboxes)
+- [Solari Desktops](https://docs.getsolari.com/desktops)
+- [Solari recording](https://docs.getsolari.com/recording)
+- [OpenCode Go](https://opencode.ai/docs/go/)
