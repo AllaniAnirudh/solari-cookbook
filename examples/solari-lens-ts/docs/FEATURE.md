@@ -30,6 +30,10 @@ Across many runs, the same data can show:
 
 Those cross-run views are the business direction, not part of this local prototype. The prototype proves that a single run can be captured and explained without hiding uncertainty.
 
+## How It Was Built
+
+AI was used for the code, tests, and documentation. OpenCode Go runs the model-driven Browser and Desktop steps. Three subagent reviews independently examined the model loop, Desktop handoff, and lifecycle and cleanup paths. Their findings were verified with local checks and one live Solari run.
+
 ## What The Example Does
 
 The checkout app is a controlled test fixture, not the product. It runs in a Solari Sandbox and has a deliberate schema defect: the payment request submits `zipCode`, while the server requires `postalCode`.

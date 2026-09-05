@@ -22,6 +22,10 @@ End users and developers need a clear explanation of one failed or slow run. The
 
 Solari teams and customer engineering teams can use the same signal across many runs to find recurring failures, unnecessary agent actions, slow environments, and reliability regressions. Cross-run aggregation and efficiency analytics are future hosted capabilities. They are not simulated in this example.
 
+## How It Was Built
+
+AI was used for the implementation, tests, and documentation. OpenCode Go is also the model provider used by the live Browser and Desktop agents. Three focused subagent reviews covered the Browser/model loop, the Desktop handoff, and lifecycle and cleanup behavior. The findings were checked with local tests, the doctor command, and a live Solari run.
+
 ## The Demonstration
 
 The demo uses a small deterministic checkout fixture:
@@ -166,4 +170,4 @@ The submission should lead with the visible failure and the evidence trail:
 
 Link the public Cookbook fork and tag `@harrychow_` and `@getsolari` on X or LinkedIn. Do not present Lens as an officially shipped Solari feature.
 
-See [DECISION_TREE.md](DECISION_TREE.md) for go/no-go branches and [docs/FEATURE.md](docs/FEATURE.md) for the short product explanation.
+See [Decision tree](DECISION_TREE.md) for go/no-go branches and [Feature overview](FEATURE.md) for the short product explanation.

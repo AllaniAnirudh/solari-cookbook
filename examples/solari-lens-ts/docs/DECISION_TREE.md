@@ -186,3 +186,5 @@ The video and social post should show the result in this order:
 5. Cleanup result.
 
 Describe Lens as a proposed Solari feature. Link the public Cookbook fork and tag `@harrychow_` and `@getsolari`.
+
+See [Feature overview](FEATURE.md), [Implementation plan](PLAN.md), and [Implementation audit](IMPLEMENTATION_AUDIT.md) for the supporting documents.

@@ -62,6 +62,10 @@ The demo has narrow adapters for the exact Browser, Sandbox, and Desktop operati
 
 The public `Lens` facade and the adapters show the intended feature boundary. The live checkout orchestration is deliberately kept in the example rather than presented as a general SDK wrapper.
 
+## Use Of AI
+
+AI was used throughout the build, as required by the challenge. OpenCode Go drives the Browser and Desktop agents in the live workflow. AI-assisted coding was used for the Lens implementation, tests, and documentation, and three independent subagent reviews examined the Browser/model loop, Desktop handoff, and lifecycle/cleanup behavior. Those reviews led to concrete fixes; the live doctor and final run were then checked against the actual Solari account.
+
 ## Evidence And Safety
 
 - Every artifact belongs to a run and records its producing operation.
@@ -94,9 +98,9 @@ The full public claim still requires three consecutive fresh live runs and a hum
 ## Documents
 
 - [Feature overview](docs/FEATURE.md)
-- [Implementation plan](PLAN.md)
-- [Decision tree](DECISION_TREE.md)
-- [Implementation audit](IMPLEMENTATION_AUDIT.md)
+- [Implementation plan](docs/PLAN.md)
+- [Decision tree](docs/DECISION_TREE.md)
+- [Implementation audit](docs/IMPLEMENTATION_AUDIT.md)
 
 ## References
 
