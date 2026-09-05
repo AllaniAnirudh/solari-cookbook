@@ -2,6 +2,14 @@
 
 Solari Lens is a proposed Solari feature that turns one agent run across Browser, Sandbox, and Desktop into an evidence-linked timeline. The example is intentionally local and self-contained: the checkout fixture is synthetic, the diagnosis is deterministic, and the live model path is optional.
 
+## Architecture and orchestration
+
+- [Implementation plan](PLAN.md): feature scope, event contract, business packaging, and verification requirements.
+- [Decision tree](DECISION_TREE.md): prerequisites, environment handoffs, failure branches, and release gates.
+- [Implementation audit](IMPLEMENTATION_AUDIT.md): known gaps and the distinction between intended behavior and verified implementation.
+
+The intended sequence is Sandbox fixture -> Browser investigation -> independent Desktop confirmation -> Sandbox evidence analysis -> Lens outcome and cleanup. The plan describes the target implementation; the release gates are not yet met.
+
 ## Run the credential-free sample
 
 ```bash
@@ -9,7 +17,7 @@ npm install
 npm run demo:sample
 ```
 
-Open the printed dashboard URL. The sample contains a genuine three-environment-shaped trace without requiring Solari or model credentials.
+Open the printed dashboard URL. The current sample is synthetic demonstration data, not a genuine captured run. Replacing it with a reviewed real capture is a release requirement.
 
 ## Run the live workflow
 
@@ -24,7 +32,7 @@ npm run demo:live
 
 The implementation uses the OpenCode Go chat-completions protocol by default and selects `deepseek-v4-flash-vision-exp` unless `MODEL_NAME` is set. It accepts `OPENCODE_API_KEY` or the existing OpenCode CLI credential at `~/.local/share/opencode/auth.json`. Confirm the chosen model and protocol through the [OpenCode Go documentation](https://opencode.ai/docs/go/) before running it.
 
-## What the demo proves
+## Intended workflow
 
 1. The Sandbox hosts a deterministic checkout fixture and exposes a preview URL.
 2. A real Browser agent attempts checkout and records observations and evidence.
@@ -47,7 +55,7 @@ await run.executeTool({
 });
 ```
 
-The local event store is SQLite. Events use monotonic sequences for the live SSE timeline. OpenTelemetry is an optional host-configured emission path. Inputs, logs, capability URLs, and metadata are redacted before persistence.
+The local event store is SQLite. Events use monotonic sequences for the live SSE timeline. Optional host-configured OpenTelemetry is planned. Text redaction and reviewed export handling are under implementation; screenshots require separate review because pixels can contain credentials.
 
 ## Verification
 
