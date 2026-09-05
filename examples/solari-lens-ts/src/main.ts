@@ -1,26 +1,16 @@
 import { startDashboard } from "./dashboard.js"
 import { LensStore } from "./lens.js"
 import { runLive } from "./live.js"
-import { configuredGoKeyAvailable } from "./model.js"
+import { runDoctor } from "./doctor.js"
 
 const mode = process.argv[2] ?? "sample"
 const port = Number(process.env.LENS_PORT ?? 4173)
 const store = new LensStore()
 
 if (mode === "doctor") {
-  const checks = [
-    ["SOLARI_API_KEY", Boolean(process.env.SOLARI_API_KEY)],
-    ["OpenCode Go credentials", Boolean(process.env.OPENCODE_API_KEY || configuredGoKeyAvailable())],
-    ["MODEL_NAME", Boolean(process.env.MODEL_NAME || "deepseek-v4-flash-vision-exp")],
-    ["OPENCODE_PROTOCOL", (process.env.OPENCODE_PROTOCOL ?? "chat-completions") === "chat-completions"]
-  ] as const
-  let failed = false
-  for (const [name, ok] of checks) {
-    console.log(`${ok ? "PASS" : "FAIL"} ${name}`)
-    if (!ok) failed = true
-  }
-  console.log("INFO desktop and preview checks run during demo:live to avoid creating billable resources during doctor")
-  if (failed) process.exitCode = 1
+  const result = await runDoctor()
+  for (const check of result.checks) console.log(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`)
+  if (!result.ok) process.exitCode = 1
 } else if (mode === "sample") {
   const runId = store.seedSample()
   startDashboard(store, port)
@@ -45,8 +35,13 @@ if (mode === "doctor") {
   } finally {
     process.removeListener("SIGINT", interrupt)
     if (interrupted) {
+      dashboard.closeAllConnections()
       await new Promise<void>((resolve) => dashboard.close(() => resolve()))
       process.exitCode = 130
+    } else if (process.env.LENS_RUN_ONCE === "1") {
+      dashboard.closeAllConnections()
+      await new Promise<void>((resolve) => dashboard.close(() => resolve()))
+      store.db.close()
     } else {
       keepAlive()
     }

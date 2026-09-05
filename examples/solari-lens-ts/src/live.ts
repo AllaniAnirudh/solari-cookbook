@@ -1,27 +1,20 @@
 import { Solari } from "@solarisdk/browser"
 import { SolariClient } from "@solarisdk/sdk"
-import { LensRun, LensStore } from "./lens.js"
-import { browserTools, desktopTools, OpenCodeModel, textContent } from "./model.js"
+import { AssessmentEvidence, finishTool, type Assessment } from "./assessment.js"
+import { browserAdapter, desktopAdapter, sandboxAdapter, type BrowserAdapter, type DesktopAdapter, type SandboxAdapter } from "./adapters.js"
+import { fixtureServerSource, fixtureAnalyzerSource } from "./fixture.js"
+import { LensRun, LensStore, type StageStatus } from "./lens.js"
+import { browserTools, desktopTools, OpenCodeModel } from "./model.js"
 
 const PORT = 3000
-const fixture = `<!doctype html><html><head><meta charset="utf-8"><title>Lens Checkout Fixture</title><style>body{font-family:system-ui;max-width:680px;margin:40px auto;padding:0 20px;color:#17212b}.step{color:#6c7d84;font-size:13px}.panel{border:1px solid #d9e1e4;padding:24px;margin-top:18px}label{display:block;margin:14px 0 5px}input{width:100%;padding:10px;border:1px solid #afbec4}button{padding:11px 18px;margin-top:20px;border:0;background:#276b7a;color:white}button:disabled{background:#aab7ba}.error{color:#a53c30;margin-top:16px}</style></head><body><p class="step">STEP 3 OF 3 · CHECKOUT</p><h1>Payment</h1><div class="panel"><p>Test product · $49.00</p><form id="payment"><label for="card">Card number</label><input id="card" aria-label="Card number" value="4242 4242 4242 4242"><label for="zip">Postal code</label><input id="zip" aria-label="Postal code" name="zipCode" value="M5V 2T6"><button id="pay" type="submit">Pay $49.00</button><p class="error" id="error" hidden>Payment is unavailable. Check the form fields and try again.</p></form></div><script>const pay=document.querySelector('#pay');const form=document.querySelector('#payment');const error=document.querySelector('#error');form.addEventListener('input',()=>{pay.disabled=!document.querySelector('#card').value});form.addEventListener('submit',e=>{e.preventDefault();error.hidden=false;window.lastCheckoutError='expected postalCode, received zipCode'});</script></body></html>`
-const server = `from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
-HTML = ${JSON.stringify(fixture)}
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(HTML.encode())
-    def log_message(self, *args): pass
-HTTPServer(('0.0.0.0', ${PORT}), Handler).serve_forever()
-`
+const EXECUTION_TIMEOUT_MS = 5 * 60_000
+const CLEANUP_TIMEOUT_MS = 60_000
 
 type BrowserPage = any
 type Desktop = any
 
 export async function runLive(store: LensStore, signal: AbortSignal = new AbortController().signal): Promise<string> {
+  signal = AbortSignal.any([signal, AbortSignal.timeout(EXECUTION_TIMEOUT_MS)])
   const model = new OpenCodeModel()
   model.assertConfigured()
   const run = store.startRun("Checkout investigation · live", { model: process.env.MODEL_NAME, workflow: "checkout", version: "0.1" })
@@ -33,7 +26,8 @@ export async function runLive(store: LensStore, signal: AbortSignal = new AbortC
   let executionStatus: "completed" | "failed" | "incomplete" = "incomplete"
   let taskOutcome: "succeeded" | "blocked" | "failed" = "failed"
   let diagnosis: "confirmed" | "supported" | "inconclusive" = "inconclusive"
-  let cleanupFailed = false
+  let cleanupStatus: "succeeded" | "partial" | "failed" = "partial"
+  const stageStatuses: Partial<Record<"browser" | "sandbox" | "desktop", StageStatus>> = {}
   let failure: unknown
   try {
     ensureActive(signal)
@@ -41,15 +35,25 @@ export async function runLive(store: LensStore, signal: AbortSignal = new AbortC
     platform = new SolariClient({ apiKey: required("SOLARI_API_KEY") })
     sandbox = await run.executeTool({ environment: "sandbox", tool: "create", input: { template: "base" }, execute: () => platform!.sandboxes.create({ template: "base", timeoutMs: 5 * 60_000 }) })
     await run.executeTool({ environment: "sandbox", tool: "connect", execute: () => sandbox.connect() })
-    await run.executeTool({ environment: "sandbox", tool: "write_fixture", input: { port: PORT }, execute: async () => {
-      await sandbox.files.write("/tmp/lens-fixture/index.html", fixture)
-      await sandbox.files.write("/tmp/lens-fixture/server.py", server)
-      return sandbox.commands.run("sh", { args: ["-c", `cd /tmp/lens-fixture && nohup python3 server.py >/tmp/lens-fixture/server.log 2>&1 &`] })
-    } })
-    const preview = await sandbox.previewUrl(PORT)
-    const previewUrl = preview.url as string
+    const sandboxOps = sandboxAdapter(run, {
+      command: (command, args) => sandbox.commands.run(command, { args }),
+      writeFile: (path, content) => sandbox.files.write(path, content),
+      readFile: (path) => sandbox.files.readText(path),
+      preview: async (port) => sandbox.previewUrl(port),
+      metrics: () => sandbox.metrics()
+    })
+    await sandboxOps.writeFile("/tmp/lens-fixture/server.py", fixtureServerSource)
+    await sandboxOps.writeFile("/tmp/lens-fixture/analyze.py", fixtureAnalyzerSource)
+    await sandboxOps.command("start_server", "sh", ["-c", `cd /tmp/lens-fixture && nohup python3 server.py >/tmp/lens-fixture/server.log 2>&1 &`])
+    const previewAccess = await sandboxOps.preview(PORT)
+    const previewUrl = typeof previewAccess === "string" ? previewAccess : previewAccess.url
+    if (!previewUrl) throw new Error("Solari preview did not return a URL")
+    if (typeof previewAccess !== "string" && previewAccess.token) {
+      const urlToken = new URL(previewUrl).searchParams.get("pt_token")
+      if (urlToken && urlToken !== previewAccess.token) throw new Error("Solari preview URL and access token do not match")
+    }
     run.artifact({ environment: "sandbox", type: "preview", state: "ready", summary: "Fixture preview URL created and kept secret", metadata: { host: new URL(previewUrl).host } })
-    await waitForPreview(previewUrl)
+    await waitForPreview(previewUrl, signal)
     ensureActive(signal)
     stage("sandbox: preview ready")
     run.event({ operationId: crypto.randomUUID(), environment: "sandbox", provenance: "observed", type: "sandbox.preview.ready", status: "succeeded", summary: "Fixture content is reachable through the Solari preview", attributes: {}, artifactIds: [] })
@@ -59,9 +63,25 @@ export async function runLive(store: LensStore, signal: AbortSignal = new AbortC
     stage("browser: launch")
     browser = await run.executeTool({ environment: "browser", tool: "launch", input: { recording: true }, execute: () => browserClient!.launch({ recording: true }) })
     const page: BrowserPage = await browser.newPage()
-    await run.executeTool({ environment: "browser", tool: "navigate", input: { path: "/payment" }, execute: () => page.goto(`${previewUrl}/payment`) })
+    const browserOps = browserAdapter(run, {
+      navigate: (url) => page.goto(url),
+      readPage: () => page.locator("body").innerText(),
+      screenshot: () => page.screenshot({ format: "png" }),
+      click: (role, name) => page.getByRole(role, { name }).click({ timeout: 5_000 }),
+      type: (label, value) => page.getByLabel(label).fill(value, { timeout: 5_000 })
+    })
+    const browserUrl = new URL(previewUrl)
+    browserUrl.searchParams.set("environment", "browser")
+    await browserOps.navigate(browserUrl.toString())
     stage("browser: agent")
-    await runBrowserAgent(run, model, page, signal)
+    const browserAssessed = await runBrowserAgent(run, model, browserOps, signal)
+    const browserStageStatus = browserAssessed ? "succeeded" : "incomplete"
+    stageStatuses.browser = browserStageStatus
+    run.stage({ environment: "browser", status: browserStageStatus, summary: browserAssessed ? "Browser agent submitted an evidence-linked assessment" : "Browser agent did not submit a verified assessment", evidence: browserAssessed?.artifactIds })
+    const browserState = new URL(page.url())
+    const checkoutId = browserState.searchParams.get("checkout")
+    if (!checkoutId) throw new Error("Browser did not establish a checkout for Desktop confirmation")
+    const handoff = desktopHandoffUrl(previewUrl, checkoutId)
 
     ensureActive(signal)
     stage("desktop: create")
@@ -73,28 +93,52 @@ export async function runLive(store: LensStore, signal: AbortSignal = new AbortC
       await desktop.exec("sh", { args: ["-c", "pkill -f '[g]oogle-chrome' || true"] })
       await new Promise((resolve) => setTimeout(resolve, 1000))
     } })
-    await run.executeTool({ environment: "desktop", tool: "open", input: { executable, flags: ["--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--new-window"] }, execute: () => desktop.open(executable, ["--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--new-window", `${previewUrl}/payment`]) })
+    await run.executeTool({ environment: "desktop", tool: "open", input: { executable }, execute: () => desktop.open(executable, browserLaunchArgs(executable, handoff.toString())) })
     await new Promise((resolve) => setTimeout(resolve, 2500))
-    await runDesktopConfirmation(run, model, desktop, signal)
+    const desktopOps = desktopAdapter(run, {
+      screenshot: () => desktop.screenshot({ format: "png" }),
+      click: (x, y) => desktop.mouse.click(x, y, { humanize: true }),
+      type: (text) => desktop.keyboard.type(text)
+    })
+    const display = await run.executeTool({ environment: "desktop", tool: "display_size", execute: () => desktop.display.size() })
+    const desktopAssessed = await runDesktopConfirmation(run, model, desktopOps, signal, { width: Number(display.w), height: Number(display.h) })
+    const desktopStageStatus = desktopAssessed ? "succeeded" : "incomplete"
+    stageStatuses.desktop = desktopStageStatus
+    run.stage({ environment: "desktop", status: desktopStageStatus, summary: desktopAssessed ? "Desktop agent submitted an evidence-linked assessment" : "Desktop agent did not submit a verified assessment", evidence: desktopAssessed?.artifactIds })
 
     stage("sandbox: diagnosis")
-    await runSandboxDiagnosis(run, sandbox)
-    executionStatus = "completed"
-    taskOutcome = "blocked"
-    diagnosis = "confirmed"
+    const analysis = await runSandboxDiagnosis(run, sandboxOps, store, checkoutId, browserAssessed, desktopAssessed)
+    if (sandboxOps.metrics) await sandboxOps.metrics()
+    const sandboxStageStatus = analysis.diagnosis === "supported" ? "succeeded" : "incomplete"
+    stageStatuses.sandbox = sandboxStageStatus
+    run.stage({ environment: "sandbox", status: sandboxStageStatus, summary: `Sandbox evidence analysis is ${analysis.diagnosis}`, evidence: [] })
+    diagnosis = analysis.diagnosis
+    executionStatus = browserAssessed && desktopAssessed ? "completed" : "incomplete"
+    taskOutcome = analysis.checkoutOutcome === "unknown" ? "failed" : analysis.checkoutOutcome
   } catch (error) {
     run.event({ operationId: crypto.randomUUID(), environment: "agent", provenance: "observed", type: "run.error", status: "failed", summary: error instanceof Error ? error.message : String(error), attributes: {}, artifactIds: [] })
-    executionStatus = "failed"
+    executionStatus = signal.aborted ? "incomplete" : "failed"
+    if (signal.aborted) taskOutcome = "failed"
     failure = error
   } finally {
-    try { if (browser) await browser.close() } catch (error) { cleanupFailed = true; console.error("browser cleanup:", error) }
-    try { if (browserClient) await browserClient.close() } catch (error) { cleanupFailed = true; console.error("browser client cleanup:", error) }
-    try { if (desktop) await desktop.kill() } catch (error) { cleanupFailed = true; console.error("desktop cleanup:", error) }
-    try { if (sandbox) await sandbox.kill() } catch (error) { cleanupFailed = true; console.error("sandbox cleanup:", error) }
+    const cleanup = await cleanupResources(platform, browser, browserClient, desktop, sandbox)
+    cleanupStatus = cleanup.status
+    for (const environment of cleanup.failedStages) {
+      const stageName = environment as "browser" | "sandbox" | "desktop"
+      if (stageStatuses[stageName]) stageStatuses[stageName] = "cleanup-pending"
+    }
   }
-  run.end({ executionStatus, taskOutcome, diagnosis, cleanupStatus: cleanupFailed ? "partial" : "succeeded" })
+  run.end({ executionStatus, taskOutcome, diagnosis, cleanupStatus, stages: stageStatuses })
   if (failure) throw failure
   return run.runId
+}
+
+export function desktopHandoffUrl(previewUrl: string, checkoutId: string): URL {
+  const handoff = new URL(previewUrl)
+  handoff.pathname = "/payment"
+  handoff.searchParams.set("checkout", checkoutId)
+  handoff.searchParams.set("environment", "desktop")
+  return handoff
 }
 
 function stage(message: string): void {
@@ -105,29 +149,37 @@ function ensureActive(signal: AbortSignal): void {
   if (signal.aborted) throw new Error("Live run interrupted; cleaning up Solari resources")
 }
 
-async function runBrowserAgent(run: LensRun, model: OpenCodeModel, page: BrowserPage, signal: AbortSignal): Promise<void> {
+async function runBrowserAgent(run: LensRun, model: OpenCodeModel, browser: BrowserAdapter, signal: AbortSignal): Promise<Assessment | undefined> {
+  const evidence = new AssessmentEvidence()
   const messages: any[] = [{ role: "system", content: "You are investigating a synthetic checkout. Use the tools to observe the page and identify the blocker. Do not invent a cause. Treat a tool error as evidence, do not repeat an impossible action, and stop once you can document the blocker." }, { role: "user", content: "Complete checkout for the test product, or identify and document the blocker." }]
-  for (let step = 0; step < 8; step++) {
+  for (let step = 0; step < 20; step++) {
     ensureActive(signal)
     const response = await model.complete(messages, browserTools, run.runId, signal)
     messages.push({ role: "assistant", content: response.content ?? null, tool_calls: response.tool_calls })
     if (!response.tool_calls?.length) {
-      run.decision({ summary: textContent(response.content), observation: "The model returned a final browser assessment.", nextAction: "desktop confirmation" })
-      return
+      const assessment = await requestFinish(run, model, messages, evidence, "browser", signal)
+      if (assessment) return assessment
+      messages.push({ role: "user", content: "Submit your assessment using finish with screenshot artifact IDs. Free text is not a verified assessment." })
+      continue
     }
     for (const call of response.tool_calls) {
-      const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
       let result: unknown
       try {
+        const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
+        if (call.function.name === "finish") {
+          if (response.tool_calls.length !== 1) throw new Error("Call finish alone")
+          return recordAssessment(run, "browser", evidence.validate(args))
+        }
         if (call.function.name === "observe") {
-          const text = await page.locator("body").innerText()
-          const shot = await page.screenshot({ format: "png" })
-          const artifactId = run.artifact({ environment: "browser", type: "screenshot", state: "ready", summary: "Browser observation screenshot", content: Buffer.from(shot).toString("base64"), metadata: { bytes: shot.byteLength, reviewedForSharing: false } })
-          result = { text, artifactId, screenshot: `data:image/png;base64,${Buffer.from(shot).toString("base64")}` }
+          const observed = await browser.observe()
+          evidence.screenshotCaptured(observed.artifactId)
+          result = observed
         } else if (call.function.name === "click") {
-          result = await run.executeTool({ environment: "browser", tool: "click", input: args, execute: () => page.getByRole(String(args.role), { name: String(args.name) }).click({ timeout: 5_000 }) })
+          result = await browser.click(String(args.role), String(args.name))
+          evidence.actionSucceeded()
         } else if (call.function.name === "type") {
-          result = await run.executeTool({ environment: "browser", tool: "type", input: { label: args.label }, execute: () => page.getByLabel(String(args.label)).fill(String(args.value), { timeout: 5_000 }) })
+          result = await browser.type(String(args.label), String(args.value))
+          evidence.actionSucceeded()
         } else {
           result = { error: `Unsupported tool ${call.function.name}` }
         }
@@ -137,42 +189,85 @@ async function runBrowserAgent(run: LensRun, model: OpenCodeModel, page: Browser
       appendToolResult(messages, call.id, result)
     }
   }
-  run.decision({ summary: "Browser tool budget reached before a final assessment.", observation: "The model did not finish within 8 tool calls.", nextAction: "desktop confirmation" })
+  return requestFinish(run, model, messages, evidence, "browser", signal)
 }
 
-async function runDesktopConfirmation(run: LensRun, model: OpenCodeModel, desktop: Desktop, signal: AbortSignal): Promise<void> {
-  const messages: any[] = [{ role: "system", content: "You are independently verifying a visible checkout state on a desktop. Use screenshots and choose only actions supported by the tools. Do not assume the browser agent's diagnosis. Report only what is visibly true." }, { role: "user", content: "Inspect the checkout screen and report the visible state of the payment control." }]
+async function runDesktopConfirmation(run: LensRun, model: OpenCodeModel, desktop: DesktopAdapter, signal: AbortSignal, display: { width: number; height: number }): Promise<Assessment | undefined> {
+  const evidence = new AssessmentEvidence()
+  signal = AbortSignal.any([signal, AbortSignal.timeout(90_000)])
+  let guiActions = 0
+  const messages: any[] = [{ role: "system", content: "You are independently verifying a synthetic checkout on a 1280x720 desktop. Observe the screen, locate Pay, click it once using absolute screen pixels, then capture the result. If the screen does not change, report the failed interaction. Do not assume the browser agent's diagnosis or infer success from button appearance." }, { role: "user", content: "Attempt this synthetic payment once and document the observed result with a screenshot." }]
   for (let step = 0; step < 10; step++) {
     ensureActive(signal)
     const response = await model.complete(messages, desktopTools, run.runId, signal)
     messages.push({ role: "assistant", content: response.content ?? null, tool_calls: response.tool_calls })
     if (!response.tool_calls?.length) {
-      run.decision({ summary: textContent(response.content), observation: "The desktop agent returned its visual confirmation.", nextAction: "sandbox diagnosis" })
-      return
+      const assessment = await requestFinish(run, model, messages, evidence, "desktop", signal)
+      if (assessment) return assessment
+      messages.push({ role: "user", content: "Submit your assessment using finish with screenshot artifact IDs. Free text is not a verified assessment." })
+      continue
     }
     for (const call of response.tool_calls) {
-      const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
       let result: unknown
+      try {
+      const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
+      if (call.function.name === "finish") {
+        if (response.tool_calls.length !== 1) throw new Error("Call finish alone")
+        return recordAssessment(run, "desktop", evidence.validate(args))
+      }
       if (call.function.name === "observe_screen") {
-        const shot = await desktop.screenshot({ format: "png" })
-        const artifactId = run.artifact({ environment: "desktop", type: "screenshot", state: "ready", summary: "Desktop observation screenshot", content: Buffer.from(shot).toString("base64"), metadata: { bytes: shot.byteLength, reviewedForSharing: false } })
-        result = { artifactId, screenshot: `data:image/png;base64,${Buffer.from(shot).toString("base64")}` }
+        const observed = await desktop.observe()
+        evidence.screenshotCaptured(observed.artifactId)
+        result = observed
       } else if (call.function.name === "click") {
-        result = await run.executeTool({ environment: "desktop", tool: "click", input: args, execute: () => desktop.mouse.click(Number(args.x), Number(args.y), { humanize: true }) })
+        ensureActive(signal)
+        if (++guiActions > 10) throw new Error("Desktop GUI action limit reached")
+        if (!Number.isInteger(args.x) || !Number.isInteger(args.y) || Number(args.x) < 0 || Number(args.x) >= display.width || Number(args.y) < 0 || Number(args.y) >= display.height) throw new Error(`Desktop click coordinates are outside the ${display.width}x${display.height} display`)
+        result = await desktop.click(Number(args.x), Number(args.y))
+        evidence.actionSucceeded()
       } else if (call.function.name === "type") {
-        result = await run.executeTool({ environment: "desktop", tool: "type", input: { text: "[synthetic]" }, execute: () => desktop.keyboard.type(String(args.text)) })
+        ensureActive(signal)
+        if (++guiActions > 10) throw new Error("Desktop GUI action limit reached")
+        result = await desktop.type(String(args.text))
+        evidence.actionSucceeded()
       } else {
         result = { error: `Unsupported tool ${call.function.name}` }
+      }
+      } catch (error) {
+        ensureActive(signal)
+        result = { error: error instanceof Error ? error.message : String(error) }
       }
       appendToolResult(messages, call.id, result ?? { ok: true })
     }
   }
   run.event({ operationId: crypto.randomUUID(), environment: "desktop", provenance: "observed", type: "desktop.incomplete", status: "failed", summary: "Desktop confirmation exceeded its action budget", attributes: { limit: 10 }, artifactIds: [] })
+  return requestFinish(run, model, messages, evidence, "desktop", signal)
 }
 
-function appendToolResult(messages: any[], callId: string, result: unknown): void {
+async function requestFinish(run: LensRun, model: OpenCodeModel, messages: any[], evidence: AssessmentEvidence, environment: "browser" | "desktop", signal: AbortSignal): Promise<Assessment | undefined> {
+  try {
+    const response = await model.complete([...messages, { role: "user", content: "Your action budget is over. Return exactly one finish tool call with the best evidence-supported outcome and screenshot artifact IDs. Do not return prose." }], [finishTool], run.runId, signal, { toolChoice: { type: "function", function: { name: "finish" } } })
+    const calls = response.tool_calls ?? []
+    const call = calls[0]
+    if (!call || call.function.name !== "finish" || calls.length !== 1) return undefined
+    return recordAssessment(run, environment, evidence.validate(JSON.parse(call.function.arguments || "{}")))
+  } catch (error) {
+    run.event({ operationId: crypto.randomUUID(), environment, provenance: "observed", type: "agent.assessment.invalid", status: "failed", summary: error instanceof Error ? error.message : String(error), attributes: {}, artifactIds: [] })
+    return undefined
+  }
+}
+
+function recordAssessment(run: LensRun, environment: "browser" | "desktop", assessment: Assessment): Assessment {
+  run.event({ operationId: crypto.randomUUID(), environment, provenance: "agent-reported", type: "agent.assessment", status: "succeeded", summary: assessment.summary, attributes: { outcome: assessment.outcome }, artifactIds: assessment.artifactIds })
+  return assessment
+}
+
+export function appendToolResult(messages: any[], callId: string, result: unknown): void {
   const content = toolResultContent(result)
-  messages.push({ role: "tool", tool_call_id: callId, content: content.text })
+  // A model can request several tools at once. All tool replies must precede images.
+  const last = messages.at(-1)
+  const pendingImage = last?.role === "user" && Array.isArray(last.content) && last.content.some((part: any) => part?.type === "image_url")
+  messages.splice(pendingImage ? messages.length - 1 : messages.length, 0, { role: "tool", tool_call_id: callId, content: content.text })
   if (content.image) {
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]
@@ -192,20 +287,28 @@ function toolResultContent(result: unknown): { text: string; image?: string } {
   return { text: JSON.stringify(metadata), image: screenshot }
 }
 
-async function runSandboxDiagnosis(run: LensRun, sandbox: any): Promise<void> {
-  const evidence = JSON.stringify({ runId: run.runId, instruction: "Compare the browser and desktop observations with the fixture schema.", expectedField: "postalCode", submittedField: "zipCode" })
-  await run.executeTool({ environment: "sandbox", tool: "write_evidence", execute: () => sandbox.files.write("/tmp/lens-fixture/evidence.json", evidence) })
-  await run.executeTool({ environment: "sandbox", tool: "diagnose", execute: () => sandbox.commands.run("python3", { args: ["-c", "import json; d=json.load(open('/tmp/lens-fixture/evidence.json')); json.dump({'diagnosis':'The form submits zipCode while the fixture expects postalCode.','evidence':['browser observation','desktop screenshot','fixture schema']}, open('/tmp/lens-fixture/diagnosis.json','w')); open('/tmp/lens-fixture/report.md','w').write('# Diagnosis\\n\\nThe `zipCode` field does not match the expected `postalCode` field.\\n')"] }) })
-  const diagnosis = await sandbox.files.readText("/tmp/lens-fixture/diagnosis.json")
-  const report = await sandbox.files.readText("/tmp/lens-fixture/report.md")
-  const diagnosisArtifact = run.artifact({ environment: "sandbox", type: "diagnosis", state: "ready", summary: "Deterministic diagnosis from browser, desktop, and fixture evidence", content: diagnosis, metadata: { reviewedForSharing: true } })
-  run.artifact({ environment: "sandbox", type: "report", state: "ready", summary: "Markdown incident report", content: report, metadata: { reviewedForSharing: true, diagnosisArtifact } })
-  run.event({ operationId: crypto.randomUUID(), environment: "sandbox", provenance: "derived", type: "sandbox.diagnosis", status: "succeeded", summary: "Derived diagnosis: zipCode does not match the expected postalCode field", attributes: { evidenceCoverage: "browser + desktop + fixture" }, artifactIds: [diagnosisArtifact] })
+async function runSandboxDiagnosis(run: LensRun, sandbox: SandboxAdapter, store: LensStore, checkoutId: string, browser: Assessment | undefined, desktop: Assessment | undefined): Promise<{ diagnosis: "supported" | "inconclusive"; checkoutOutcome: "blocked" | "succeeded" | "unknown" }> {
+  const logs = await sandbox.readFile("/tmp/lens-fixture/fixture.jsonl")
+  const logArtifactId = run.artifact({ environment: "sandbox", type: "fixture-log", state: "ready", summary: "Sanitized checkout request log", content: logs, metadata: { reviewedForSharing: false } })
+  const recorded = store.run(run.runId)
+  const observations = Object.entries({ browser, desktop }).flatMap(([environment, assessment]) => assessment ? [{ environment, checkoutId, ...assessment }] : [])
+  const evidence = JSON.stringify({ runId: run.runId, checkoutId, logArtifactId, artifacts: (recorded?.artifacts ?? []).map((item: any) => ({ id: item.id, environment: item.environment, type: item.type, state: item.state })), observations })
+  await sandbox.writeFile("/tmp/lens-fixture/evidence.json", evidence)
+  await sandbox.command("diagnose", "python3", ["/tmp/lens-fixture/analyze.py", "/tmp/lens-fixture/fixture.jsonl", "/tmp/lens-fixture/evidence.json", "/tmp/lens-fixture"])
+  const diagnosis = await sandbox.readFile("/tmp/lens-fixture/diagnosis.json")
+  const report = await sandbox.readFile("/tmp/lens-fixture/report.md")
+  const analysis = JSON.parse(diagnosis)
+  if (!["supported", "inconclusive"].includes(analysis?.diagnosis) || !["blocked", "succeeded", "unknown"].includes(analysis?.checkoutOutcome)) throw new Error("Analyzer returned an invalid outcome")
+  const diagnosisArtifact = run.artifact({ environment: "sandbox", type: "diagnosis", state: "ready", summary: `Evidence diagnosis: ${analysis.diagnosis}`, content: diagnosis, metadata: { reviewedForSharing: false } })
+  run.artifact({ environment: "sandbox", type: "report", state: "ready", summary: "Markdown incident report", content: report, metadata: { reviewedForSharing: false, diagnosisArtifact } })
+  run.event({ operationId: crypto.randomUUID(), environment: "sandbox", provenance: "derived", type: "sandbox.diagnosis", status: analysis.diagnosis === "supported" ? "succeeded" : "pending", summary: `Request and screenshot evidence analyzed: ${analysis.diagnosis}`, attributes: { diagnosis: analysis.diagnosis }, artifactIds: [diagnosisArtifact] })
+  return analysis
 }
 
-async function waitForPreview(url: string): Promise<void> {
+async function waitForPreview(url: string, signal: AbortSignal): Promise<void> {
   for (let attempt = 0; attempt < 15; attempt++) {
-    try { const response = await fetch(url); if (response.ok && (await response.text()).includes("Lens Checkout Fixture")) return } catch { /* preview is still warming */ }
+    ensureActive(signal)
+    try { const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]) }); if (response.ok && (await response.text()).includes("Lens Checkout Fixture")) return } catch { ensureActive(signal) }
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }
   throw new Error("Fixture preview did not return expected content")
@@ -231,4 +334,46 @@ function required(name: string): string {
   const value = process.env[name]
   if (!value) throw new Error(`${name} is required`)
   return value
+}
+
+function browserLaunchArgs(executable: string, url: string): string[] {
+  const name = executable.toLowerCase().split("/").pop() ?? executable
+  if (name.includes("firefox")) return ["--new-instance", "--width", "1280", "--height", "720", url]
+  return ["--no-sandbox", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--start-maximized", "--new-window", url]
+}
+
+async function cleanupResources(platform: SolariClient | undefined, browser: any, browserClient: Solari | undefined, desktop: Desktop | undefined, sandbox: any): Promise<{ status: "succeeded" | "partial" | "failed"; failedStages: string[] }> {
+  const failedStages: string[] = []
+  const deadline = Date.now() + CLEANUP_TIMEOUT_MS
+  try { if (browser) await withTimeout(() => browser.close(), 10_000, "browser close") } catch { failedStages.push("browser") }
+  try { if (browserClient) await withTimeout(() => browserClient.close(), 10_000, "browser client close") } catch { failedStages.push("browser") }
+  if (platform && desktop) {
+    if (!await releaseAndVerify(() => desktop.kill(), () => platform.desktops.get(desktop.id), deadline)) failedStages.push("desktop")
+  }
+  if (platform && sandbox) {
+    if (!await releaseAndVerify(() => sandbox.kill(), () => platform.sandboxes.get(sandbox.id), deadline)) failedStages.push("sandbox")
+  }
+  return { status: failedStages.length ? "partial" : "succeeded", failedStages }
+}
+
+async function releaseAndVerify(kill: () => Promise<unknown>, get: () => Promise<any>, deadline: number): Promise<boolean> {
+  try { await withTimeout(kill, 15_000, "remote release") } catch { /* reconciliation below is authoritative */ }
+  while (Date.now() < deadline) {
+    try {
+      const view = await withTimeout(get, 5_000, "cleanup verification")
+      const state = String(view?.status ?? view?.state ?? "")
+      if (["gone", "deleted", "destroyed"].includes(state)) return true
+    } catch (error) {
+      if (/404|not found|gone/i.test(error instanceof Error ? error.message : String(error))) return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+  return false
+}
+
+async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number, name: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${name} timed out`)), timeoutMs)
+    operation().then(value => { clearTimeout(timer); resolve(value) }, error => { clearTimeout(timer); reject(error) })
+  })
 }
