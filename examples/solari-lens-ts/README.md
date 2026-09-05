@@ -17,12 +17,12 @@ The live workflow requires Solari capacity for one browser, one sandbox, and one
 
 ```bash
 cp .env.example .env
-# fill in SOLARI_API_KEY, OPENCODE_API_KEY, and MODEL_NAME
+# fill in SOLARI_API_KEY; OpenCode Go may use the existing local CLI auth
 npm run doctor
 npm run demo:live
 ```
 
-The implementation uses the OpenCode Go chat-completions protocol by default. Confirm the chosen model and protocol through the [OpenCode Go documentation](https://opencode.ai/docs/go/) before running it.
+The implementation uses the OpenCode Go chat-completions protocol by default and selects `deepseek-v4-flash-vision-exp` unless `MODEL_NAME` is set. It accepts `OPENCODE_API_KEY` or the existing OpenCode CLI credential at `~/.local/share/opencode/auth.json`. Confirm the chosen model and protocol through the [OpenCode Go documentation](https://opencode.ai/docs/go/) before running it.
 
 ## What the demo proves
 

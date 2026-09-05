@@ -1,6 +1,7 @@
 import { startDashboard } from "./dashboard.js"
 import { LensStore } from "./lens.js"
 import { runLive } from "./live.js"
+import { configuredGoKeyAvailable } from "./model.js"
 
 const mode = process.argv[2] ?? "sample"
 const port = Number(process.env.LENS_PORT ?? 4173)
@@ -9,8 +10,8 @@ const store = new LensStore()
 if (mode === "doctor") {
   const checks = [
     ["SOLARI_API_KEY", Boolean(process.env.SOLARI_API_KEY)],
-    ["OPENCODE_API_KEY", Boolean(process.env.OPENCODE_API_KEY)],
-    ["MODEL_NAME", Boolean(process.env.MODEL_NAME)],
+    ["OpenCode Go credentials", Boolean(process.env.OPENCODE_API_KEY || configuredGoKeyAvailable())],
+    ["MODEL_NAME", Boolean(process.env.MODEL_NAME || "deepseek-v4-flash-vision-exp")],
     ["OPENCODE_PROTOCOL", (process.env.OPENCODE_PROTOCOL ?? "chat-completions") === "chat-completions"]
   ] as const
   let failed = false

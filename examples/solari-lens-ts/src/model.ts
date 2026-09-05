@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+
 type Message = { role: "system" | "user" | "assistant" | "tool"; content: unknown; tool_call_id?: string; tool_calls?: unknown[] }
 
 export type ToolDefinition = {
@@ -11,12 +14,11 @@ export type ModelResponse = {
 
 export class OpenCodeModel {
   private readonly baseUrl = (process.env.OPENCODE_BASE_URL ?? "https://opencode.ai/zen/go/v1").replace(/\/$/, "")
-  private readonly model = process.env.MODEL_NAME
-  private readonly apiKey = process.env.OPENCODE_API_KEY
+  private readonly model = normalizeModel(process.env.MODEL_NAME ?? "deepseek-v4-flash-vision-exp")
+  private readonly apiKey = process.env.OPENCODE_API_KEY ?? configuredGoKey()
 
   assertConfigured(): void {
-    if (!this.apiKey) throw new Error("OPENCODE_API_KEY is required for demo:live")
-    if (!this.model) throw new Error("MODEL_NAME is required for demo:live; choose a model verified with doctor")
+    if (!this.apiKey) throw new Error("OPENCODE_API_KEY is required, or configure OpenCode Go with `opencode providers login`")
     if ((process.env.OPENCODE_PROTOCOL ?? "chat-completions") !== "chat-completions") throw new Error("This prototype currently supports OPENCODE_PROTOCOL=chat-completions only")
   }
 
@@ -40,6 +42,24 @@ export class OpenCodeModel {
     const message = json.choices?.[0]?.message
     if (!message) throw new Error("OpenCode returned no assistant message")
     return message
+  }
+}
+
+function normalizeModel(model: string): string {
+  return model.startsWith("opencode-go/") ? model.slice("opencode-go/".length) : model
+}
+
+export function configuredGoKeyAvailable(): boolean {
+  return Boolean(configuredGoKey())
+}
+
+function configuredGoKey(): string | undefined {
+  try {
+    const path = `${homedir()}/.local/share/opencode/auth.json`
+    const auth = JSON.parse(readFileSync(path, "utf8")) as { "opencode-go"?: { key?: string } }
+    return auth["opencode-go"]?.key
+  } catch {
+    return undefined
   }
 }
 
